@@ -1,7 +1,7 @@
-use std::thread;
 use std::sync::mpsc;
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread;
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
@@ -39,8 +39,8 @@ impl ThreadPool {
     }
 
     pub fn execute<F>(&self, f: F)
-        where
-            F: FnOnce() + Send + 'static,
+    where
+        F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
 
@@ -64,9 +64,8 @@ impl Drop for ThreadPool {
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
-
         let thread = thread::spawn(move || loop {
-            let message = receiver.lock().unwrap().recv().unwrap();
+            let message = receiver.lock().expect("previous thread panicked....").recv().unwrap();
 
             match message {
                 Message::NewJob(job) => {
@@ -80,25 +79,66 @@ impl Worker {
             }
         });
 
-        Worker { id, thread: Some(thread) }
+        Worker {
+            id,
+            thread: Some(thread),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread::JoinHandle;
+    use crate::Message::NewJob;
+    use std::*;
+    use std::io::Write;
 
     #[test]
-    fn worker_has_id() {
-        let (_, receiver) = mpsc::channel();
-        let returned_worker = Worker::new( 2,Arc::new(Mutex::new(Message::NewJob(2) )));
+    fn test_thread_pool_new() {
+        let pool = ThreadPool::new(10);
 
-        assert_eq!(returned_worker.id, 2);
+        assert_eq!(pool.workers.len(), 10);
     }
 
     #[test]
-    #[should_panic]
-    fn worker_id_is_too_low() {
-        Worker::new( 0,Arc::new(Mutex::new(receiver )));
+    fn test_thread_execute() {
+        let pool = ThreadPool::new(1);
+        let mut stdout = Vec::new();
+
+        let x = {
+            write_to_stdout(&mut stdout, "...processing task 1");
+            write_to_stdout(&mut stdout, "...processing task 2");
+        };
+
+        let consume_fn = move || x;
+        pool.execute( consume_fn );
+
+        assert_eq!(stdout, b"...processing task 1\n...processing task 2\n");
+    }
+
+    #[test]
+    fn test_worker_new() {
+        let pool = ThreadPool::new(1);
+        let mut stdout = Vec::new();
+        let (sender, receiver) = mpsc::channel(); // creates a new async channel
+    
+        let receiver = Arc::new(Mutex::new(receiver)); // Arc used to share memory
+    
+        Worker::new(5, Arc::clone(&receiver));
+    
+        let x = {
+            write_to_stdout(&mut stdout, "...processing task 1");
+            write_to_stdout(&mut stdout, "...processing task 2");
+        };
+    
+        let consume_fn = move || x;
+        pool.execute( consume_fn );
+    
+        assert_eq!(stdout, b"...processing task 1\n...processing task 2\n");
+    }
+
+    fn write_to_stdout(stdout: &mut dyn io::Write, thing: &str) {
+        writeln!(stdout, "{}", thing);
     }
 }
